@@ -1,0 +1,23 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.28307.705
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "HaliteIV", "HaliteIV.pyproj", "{55E11BFE-BE40-4092-BC59-8BD7875CF4E1}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{55E11BFE-BE40-4092-BC59-8BD7875CF4E1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{55E11BFE-BE40-4092-BC59-8BD7875CF4E1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {7994D443-5F7E-43E5-9447-DC7442FFA3B0}
+	EndGlobalSection
+EndGlobal
