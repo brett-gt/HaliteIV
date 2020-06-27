@@ -208,6 +208,9 @@ def agent(obs, config):
             
         Assumes if the plan does not end at the shipyard, we will then move along the shortest safe path to it.
         """
+        if(len(shipyards) <= 0):
+            return 0
+
         if max_depth == 0:
             return (halite_so_far, copy.copy(path))
             

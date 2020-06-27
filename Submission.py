@@ -3,7 +3,8 @@
 
 
 # TODO:
-#   Need to track individual assignments of units, if one is trying to destroy an enemy, dont let another take do the same
+#   Need to track individual assignments of units, if one is trying to destroy an enemy, dont let another take do the same.
+#   Same is true for minign halite.  Need a unique assignment type function
 #
 #   Shipyards - calculate one closest to other enemy shipyards, make this spawner for attack ships
 #
@@ -17,6 +18,8 @@
 #
 #   Need an objectives map so everyone doesn't try to do same thing
 
+
+
 from kaggle_environments.envs.halite.helpers import *
 import numpy as np
 from math import sqrt
@@ -27,7 +30,7 @@ import random
 # Global Settings
 #--------------------------------------------------------------------------------
 
-DEBUG = False
+DEBUG = True
 
 # Number of gatherers to maintain
 NUMBER_OF_GATHERERS = 3
@@ -71,11 +74,6 @@ def agent(obs,config):
     me = board.current_player
     opponents = board.opponents
 
-    #Create blank map where we store our moves for deconfliction
-    # TODO:  Make a class
-    # next_map = [[None for i in range(size)] for j in range(size)]
-
-
     agent.fleet = getattr(agent, 'fleet', [])
 
 
@@ -98,9 +96,9 @@ def agent(obs,config):
         '''
         fromX, fromY = fromPos[0], fromPos[1]
         toX, toY = toPos[0], toPos[1]
-        if abs(fromX-toX) > size / 2:
+        if abs(fromX - toX) > size / 2:
             fromX += size
-        if abs(fromY-toY) > size / 2:
+        if abs(fromY - toY) > size / 2:
             fromY += size
         if fromY < toY and possList[0]: return ShipAction.NORTH
         if fromY > toY and possList[1]: return ShipAction.SOUTH
@@ -188,7 +186,8 @@ def agent(obs,config):
 
     #--------------------------------------------------------------------------------
     def halite_prediction(position, turns):
-        ''' Return how much halite would be gathered by sitting on position for X turns
+        ''' Return how much halite would be gathered by sitting on position for X turns.
+            Useful for determining if we should move or stay put.
         '''
         current = board.cells[position].halite
         total = 0
@@ -218,7 +217,7 @@ def agent(obs,config):
         return closest, min_dist
        
     #--------------------------------------------------------------------------------
-    def closest_base(ship):
+    def closest_shipyard(ship):
         ''' Find closest shipyard and return to it.
 
             Returns None if no shipyards exist, need to check for this and take appropriate
@@ -247,6 +246,7 @@ def agent(obs,config):
     # GAME MEMORY
     #region GAME MEMORY
 
+  
     #--------------------------------------------------------------------------------
     class enemy_metadata(object):
         ''' Class to hold meta data about enemy units.
@@ -254,6 +254,7 @@ def agent(obs,config):
         def __init__(self, unit):
             pass;
 
+ 
     #--------------------------------------------------------------------------------
     class my_metadata(object):
         ''' Class to hold metadata about friendly ship actions.
@@ -264,7 +265,7 @@ def agent(obs,config):
         def __init__(self, ship):
             debug("ship_metadata: Initializing new ship " + ship.id)
             self.id = ship.id
-            self.action = None
+            self.task = None
             self.state = ShipTask.NONE
             self.blocked_timer = 0                #TODO: Could measure time blocked by other unit and vary actions      
             self.dist_to_closest_shipyard = 0     # Track for end of the game return
@@ -272,38 +273,71 @@ def agent(obs,config):
 
         def update(self, ship):
             debug("ship_metadata: Updating " + self.id)
+
+            #Get updated pointer in ship list
+            self.ship = next((x for x in me.ships if x.id == self.id), None)
+            if(self.ship is None):
+                print("Ship update error.  Couldn't find meta ship in current ship list.")
+
             self.position = ship.position
 
             closest, min_dist = closest_enemy(ship)
             self.closest_enemy = closest.id
             self.closest_dist  = min_dist
 
-        def __repr__(self):
-            return {'id':self.id, 'action':self.action}
-
         def __str__(self):
-            result = "Ship: " + self.id + " current action: " + str(self.action) + "\n";
+            result = "Ship: " + self.id + " current action: " + str(self.task) + "\n";
             result = result + "Closest enemy: " + self.closest_enemy + " is " + str(self.closest_dist) + " away.\n"
             return result;
 
     #--------------------------------------------------------------------------------
+    class map_cell(object):
+        ''' Cells for my map.  Hopefully this doesn't get confusing with the other cells
+        '''
+        def __init__(self, position):
+            self._position = position
+            self.occupied_id = None
+            self.target_id = None
+
+        def __str__(self) -> str:
+             print(self._position) 
+
+
+    #--------------------------------------------------------------------------------
     class map(object):
-        ''' Map class similar to the board object.  It looked like board object would
-            be difficult to use for my intended purpose so creating a subset of it
+        ''' Map class similar to the board object.  Board object includes a .next() function
+            that will propogate actions in the future, but it seemed easier just to plop objects
+            where I want them instead of iteratively calling next as I planned.  I also may want
+            to go multiple turns in future.  
         '''
         def __init__(self, size):
+            self.cells: Dict[Point, map_cell] = {}
+            #self._cells = [[None for i in range(size)] for j in range(size)]
+            for x in range(size): 
+                for y in range(size): 
+                    pos = Point(x,y)
+                    self.cells[pos] = map_cell(pos)
             self.size = size
-            self.cells = [[None for i in range(size)] for j in range(size)]
+            
+        def add_occupier(self, unit_id, position):
+            self.cells[position].occupied_id = unit_id
 
-
-        def add_unit(self, unit_id, position):
-            self.cells[position.x][position.y] = unit_id
-
-        def is_free(self, position):
-            if(self.cells[position.x][position.y] == None):
-                return True
-            else:
+        def is_occupied(self, position):
+            if(self.cells[position].occupied_id == None):
                 return False
+            else:
+                return True
+
+        def add_target(self, unit_id, position):
+            print("Add target: " + str(position) + " " + unit_id)
+            self.cells[position].target_id = unit_id
+
+
+        def is_target(self, position):
+            if(self.cells[position].target_id == None):
+                return False
+            else:
+                return True
 
         def __str__(self) -> str:
             '''
@@ -314,10 +348,11 @@ def agent(obs,config):
             for y in range(size):
                 result += str(y).rjust(3)
                 for x in range(size):
-                    cell = self.cells[x][size - y - 1]
+                    #cell = self.cells[x][size - y - 1]
+                    occupied = self.cells[(x, size - y - 1)].occupied_id
 
                     result += '|'
-                    result += cell.rjust(4) if cell is not None else '    '
+                    result += occupied.rjust(4) if occupied is not None else '    '
                     
                     # This normalizes a value from 0 to max_cell halite to a value from 0 to 9
                     #normalized_halite = int(9.0 * cell.halite / float(self.configuration.max_cell_halite))
@@ -381,46 +416,80 @@ def agent(obs,config):
         choices = [dir] + choices;
         for choice in choices:
             new_pos = get_new_pos(ship.position, choice)
-            if next_map.is_free(new_pos):
-                next_map.add_unit(ship.id, new_pos)
+            if not next_map.is_occupied(new_pos):
+                next_map.add_occupier(ship.id, new_pos)
                 debug("position_deconflict : wanted " + str(dir) + " ended up with " + str(choice))
                 return choice;
 
         print("position_deconflict error")
         return None
 
+
+    #--------------------------------------------------------------------------------
+    def ship_gather(ship):
+        ''' All logic for a gathering ship '''
+
+        dest = find_halite(ship, 4)
+        dest_amount = board.cells[dest].halite
+
+        dist = manhattan_distance(ship.position, dest)
+        here_amount = halite_prediction(ship.position, dist)
+
+        debug("ship_control: Gather target " + str(dest) + "=" + str(dest_amount) + " staying here: " + str(here_amount))
+
+        if(dest_amount < GATHER_MOVE_FACTOR * here_amount):
+            dest = ship.position
+        return dest
+
+    #--------------------------------------------------------------------------------
+    def ship_attack(ship):
+        ''' All logic for a attack ship '''
+        closest, min_dist = closest_enemy(ship)
+        return closest.position
+
     #--------------------------------------------------------------------------------
     def ship_control(ship):
+        ''' Function to handle the details of assigning moves to specific ships.
+            
+            TODO: Better logic for spawning shipyards
+        '''
+        meta = next((x for x in agent.fleet if x.id == ship.id), None) 
+        print(meta)
+        print("Controlling ship " + ship.id)
 
-        if len(board.current_player.shipyards) == 0:
+        # First see if need to make a shipyard
+        # TODO: More advanced later
+        if len(me.shipyards) == 0:
+            print("ship_control: Converting")
             ship.next_action = ShipAction.CONVERT
-        else:
-            #closest, min_dist = closest_enemy(ship)
-            #dir = getDirTo(ship.position, closest.position)
-            #ship.next_action = dir
+            return
 
-            # Make a decision on what to do
-            if(ship.halite > RETURN_HALITE_THRESH):
-                shipyard = closest_base(ship)
-                dest = shipyard.position
 
-            else:
-                dest = find_halite(ship, 4)
-                dest_amount = board.cells[dest].halite
+        dest = ship.position
 
-                dist = manhattan_distance(ship.position, dest)
-                here_amount = halite_prediction(ship.position, dist)
+        # Return to base if collected a lot of halite
+        if ship.halite > RETURN_HALITE_THRESH:
+            shipyard = closest_shipyard(ship)
+            dest = shipyard.position
 
-                debug("ship_control: Gather target " + str(dest) + "=" + str(dest_amount) + " staying here: " + str(here_amount))
+        elif meta.task == ShipTask.GATHER:
+            print("ship_control: Gather")
+            dest = ship_gather(ship)
 
-                if(dest_amount < GATHER_MOVE_FACTOR * here_amount):
-                    dest = ship.position
+        elif meta.task == ShipTask.ATTACK:
+            print("ship_control: Attack")
+            dest = ship_attack(ship)
 
-            dir = get_direction_to(ship.position, dest)
-            dir = position_deconflict(ship, dir)              # Make sure we don't run into our own units
+        next_map.add_target(ship.id, dest)
 
-            if(dir is not None):
-                ship.next_action = dir
+        dir = get_direction_to(ship.position, dest)
+
+        dir = position_deconflict(ship, dir)              # Make sure we don't run into our own units
+
+        if(dir is not None):
+            ship.next_action = dir
+            print("ship_gather: next dir " + str(dir))
+  
 
 
     #--------------------------------------------------------------------------------
@@ -428,17 +497,33 @@ def agent(obs,config):
 
         # TODO: Needs updating for multiple shipyards
 
+        # TODO: Need better logic for ship sitting on shipyard
+
         # If there are no ships, use first shipyard to spawn a ship.
         if len(me.ships) < MAX_UNITS:
-            shipyard.next_action = ShipyardAction.SPAWN
+            if not next_map.is_occupied(shipyard.position):
+                shipyard.next_action = ShipyardAction.SPAWN
+            else:
+                print("Shipyard blocked from creating by ship sitting on it.")
 
 
     #--------------------------------------------------------------------------------
     def assign_task():
         ''' Contains the logic for assigning task to individual ships
+
+            TODO: Oversimplyfying things for now and just making first units gatherers
+                  and others hunters.  Add better logic later (proximity to enemies, 
+                  amount of halite we have, etc).
         '''
+        gatherers =  0
         for ship in agent.fleet:
-            ship.task = ShipTask.GATHER
+            if gatherers < NUMBER_OF_GATHERERS:
+                print("Assinging " + ship.id + " to gather.")
+                ship.task = ShipTask.GATHER
+                gatherers += 1
+            else:
+                print("Assinging " + ship.id + " to attack.")
+                ship.task = ShipTask.ATTACK
 
            
     #endregion
@@ -448,6 +533,7 @@ def agent(obs,config):
     # Actual Function Code
     #--------------------------------------------------------------------------------
     next_map = map(size)
+    print(board)
  
     update_state()
 
@@ -455,10 +541,11 @@ def agent(obs,config):
 
 
     # Set actions for each ship
+    #for ship in me.ships:
     for ship in me.ships:
-        halite_prediction(ship.position, 3)
         ship_control(ship)
 
+    print(next_map)
     debug(next_map)
 
     # Set actions for each shipyard
