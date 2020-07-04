@@ -39,6 +39,11 @@ MAX_UNITS = 5
 # How much more halite must be available elsewhere to bother moving off current spot
 GATHER_MOVE_FACTOR = 1.2
 
+
+# Proximity (Manhattan distance) away that enemies need to be for a space to be 
+# considered safe
+SAFE_PROXIMITY = 2
+
 # Treshhold beyond which a friendly unit returns to base
 RETURN_HALITE_THRESH = 1000
 
@@ -109,8 +114,6 @@ def agent(obs,config):
     #--------------------------------------------------------------------------------
     def get_linear_distance(pointA, pointB):
         ''' Returns best direction to move from one position (fromPos) to another (toPos)
-        
-            TODO: Reference Manhattan distance (https://www.kaggle.com/tmbond/halite-example-agents)
         '''
         x = abs(pointA.x - pointB.x)
         y = abs(pointA.y - pointB.y)
@@ -120,7 +123,6 @@ def agent(obs,config):
     def manhattan_distance(pos1, pos2):
         """Gets the Manhattan distance between two positions, i.e.,
         how many moves it would take a ship to move between them."""
-        # TODO: Unit test
         dx = manhattan_distance_single(pos1.x, pos2.x)
         dy = manhattan_distance_single(pos1.y, pos2.y)
         return dx + dy
@@ -128,7 +130,6 @@ def agent(obs,config):
     #--------------------------------------------------------------------------------
     def manhattan_distance_single(i1, i2):
         """Gets the distance in one dimension between two columns or two rows, including wraparound."""
-        # TODO: Unit test
         iMin = min(i1, i2)
         iMax = max(i1, i2)
         return min(iMax - iMin, iMin + size - iMax)
@@ -175,6 +176,56 @@ def agent(obs,config):
 
         return destinations
     
+    #--------------------------------------------------------------------------------
+    def get_safe_moves(pos, halite_level):
+        ''' Loop through possible moves and determine which are likely to be safe 
+            based on proximity of enemies
+        '''
+        move_list = ShipAction.moves() 
+        good_moves = []
+
+        region = get_region(pos, SAFE_PROXIMITY)
+        if check_region_for_enemy(region, halite_level):
+            good_moves.append(None)
+                
+        for move in move_list:
+            new_pos = get_new_pos(pos, move)
+            region = get_region(new_pos, SAFE_PROXIMITY)
+            if check_region_for_enemy(region, halite_level, task = 'AVOID'):
+                good_moves.append(move)
+
+    #--------------------------------------------------------------------------------
+    def check_region_for_enemy(region, halite_level, task = 'AVOID'):
+        ''' Check a region to see if there is an enemy within it.
+            Handles avoid (look for ships with less halite) and attack
+            (look for ships with more halite)
+        '''
+        found = False
+        for pos in region:
+            cell = board.cells[pos]
+
+            if (cell.ship is not None and 
+                cell.ship.player_id != me):
+                
+                if(task == 'ATTACK'):
+                    if(cell.ship.halite > halite_level):
+                        found = True
+                        next_map.add_target(cell.ship.id, pos)
+                        break
+
+                if(task == 'AVOID'):
+                    if(cell.ship.halite < halite_level):
+                        found = True
+                        next_map.add_agressor(cell.ship.id, pos)
+                        break
+
+                else:
+                    print("check_region_for_enemy task error")
+                    
+        return found
+
+
+
     #--------------------------------------------------------------------------------
     def find_halite(ship, depth):
         ''' Find the maximum halite available assuming we want to make 'Depth' number
@@ -298,9 +349,20 @@ def agent(obs,config):
             self._position = position
             self.occupied_id = None
             self.target_id = None
+            self.aggressor_id = None
+            self.halite_id = None
 
         def __str__(self) -> str:
-             print(self._position) 
+            if(self.occupied_id is not None):
+                return "ME" + self.occupied_id
+            elif(self.target_id is not None):
+                return "TG" + self.target_id
+            elif(self.aggressor_id is not None):
+                return "AG" + self.aggressor_id
+            elif(self.halite_id is not None):
+                return "HA" + self.halite_id
+            else:
+                return ' '
 
 
     #--------------------------------------------------------------------------------
@@ -332,41 +394,42 @@ def agent(obs,config):
             print("Add target: " + str(position) + " " + unit_id)
             self.cells[position].target_id = unit_id
 
-
         def is_target(self, position):
             if(self.cells[position].target_id == None):
                 return False
             else:
                 return True
 
+        def add_agressor(self, unit_id, position):
+            print("Add aggresor: " + str(position) + " " + unit_id)
+            self.cells[position].agressor_id = unit_id
+
+        def add_halite(self, unit_id, position):
+            print("Add halite: " + str(position) + " " + unit_id)
+            self.cells[position].halite_id = unit_id
+
         def __str__(self) -> str:
             '''
             Use same string method as the board.
             '''
+            just_len = 5
             size = self.size
             result = ''
             for y in range(size):
                 result += str(y).rjust(3)
                 for x in range(size):
                     #cell = self.cells[x][size - y - 1]
-                    occupied = self.cells[(x, size - y - 1)].occupied_id
+                    #occupied = self.cells[(x, size - y - 1)].occupied_id
+                    val = str(self.cells[(x, size - y - 1)])
 
                     result += '|'
-                    result += occupied.rjust(4) if occupied is not None else '    '
+                    result += val.rjust(just_len) if val is not None else ' '.rjust(just_len)
                     
-                    # This normalizes a value from 0 to max_cell halite to a value from 0 to 9
-                    #normalized_halite = int(9.0 * cell.halite / float(self.configuration.max_cell_halite))
-                    #result += str(normalized_halite)
-                    #result += (
-                    #    chr(ord('A') + cell.shipyard.player_id)
-                    #    if cell.shipyard is not None
-                    #    else ' '
-                    #)
                 result += '|\n'
 
-            result += ' '.rjust(4) 
+            result += ' '.rjust(just_len) 
             for x in range(size):
-                result += str(x).center(5) 
+                result += str(x).center(just_len + 1) 
             result += '\n'
             return result
 
@@ -439,6 +502,8 @@ def agent(obs,config):
 
         if(dest_amount < GATHER_MOVE_FACTOR * here_amount):
             dest = ship.position
+
+        next_map.add_halite(ship.id, dest)
         return dest
 
     #--------------------------------------------------------------------------------
