@@ -92,7 +92,6 @@ def agent(obs,config):
 
     #endregion
 
-
     # DISTANCE AND DIRECTION
     #region DISTANCE AND DIRECTION
     #--------------------------------------------------------------------------------
@@ -293,11 +292,9 @@ def agent(obs,config):
     #endregion
 
 
-
     # GAME MEMORY
     #region GAME MEMORY
 
-  
     #--------------------------------------------------------------------------------
     class enemy_metadata(object):
         ''' Class to hold meta data about enemy units.
