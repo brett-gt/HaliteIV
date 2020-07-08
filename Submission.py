@@ -59,7 +59,6 @@ coefficient_maps = {}
 size = 0
 
 
-
 #--------------------------------------------------------------------------------
 # Global Types
 #--------------------------------------------------------------------------------
@@ -74,8 +73,6 @@ class CellType(Enum):
     ENEMY_SHIPYARD = 3
     FRIENDLY_SHIP = 4
     FRIENDLY_SHIPYARD = 5
-
-
 
 
 # HELPER FUNCTIONS
@@ -198,14 +195,10 @@ def agent(obs,config):
 
     #INITIALIZATION CODE
     #region INIT
-
-
     if not initialized:
         print("Initializing")
         init_coefficient_map(size)
-        print(coefficient_maps)
         initialized = True
-
     #endregion
 
     #TEST CODE
@@ -213,15 +206,9 @@ def agent(obs,config):
     print("Turn " + str(agent.counter))
 
 
-
-  
-
-
     # CONTROL HELPERS
     #region HELPER FUNCTIONS
 
-
-    
     #--------------------------------------------------------------------------------
     def get_safe_moves(pos, halite_level):
         ''' Loop through possible moves and determine which are likely to be safe 
@@ -318,13 +305,11 @@ def agent(obs,config):
 
         return target
 
-
     #endregion
 
 
     # GAME MEMORY
     #region GAME MEMORY
-
 
     #--------------------------------------------------------------------------------
     class heat(object):
@@ -392,6 +377,15 @@ def agent(obs,config):
             else:
                 return False
 
+        #---------------------------------------------------------------------------
+        def __mul__(self, other):
+            result = {}
+            for x in range(size): 
+                for y in range(size): 
+                    pos = Point(x,y)
+                    result.update({pos : self.cells[pos].score * other[pos]})
+            return result
+
         #--------------------------------------------------------------------------------
         def __str__(self) -> str:
             '''
@@ -415,7 +409,6 @@ def agent(obs,config):
                 result += str(x).center(just_len + 1) 
             result += '\n'
             return result
-
 
     #endregion
 
@@ -454,17 +447,14 @@ def agent(obs,config):
     #--------------------------------------------------------------------------------
     def ship_control(ship):
         ''' Function to handle the details of assigning moves to specific ships.
-            
             TODO: Better logic for spawning shipyards
         '''
-        meta = next((x for x in agent.fleet if x.id == ship.id), None) 
-        print(meta)
         print("Controlling ship " + ship.id)
 
         # First see if need to make a shipyard
         # TODO: More advanced later
         if len(me.shipyards) == 0:
-            print("ship_control: Converting")
+            print("ship_control: Converting to shipyard")
             ship.next_action = ShipAction.CONVERT
             return
 
@@ -475,9 +465,18 @@ def agent(obs,config):
             dest = shipyard.position
 
         else:
-            pass
+            print("\n\nMoving ship")
+            start_map = heat_map 
+            print("\nStart map")
+            print(start_map)
+            coef_map = coefficient_maps[ship.position]
+            print("\nCoef map")
+            print(coef_map)
+            the_map = heat_map * coef_map
+            print("\nCombined map")
+            print(the_map)
 
-        next_map.add_target(ship.id, dest)
+            pass
 
         dir = get_direction_to(ship.position, dest)
 
@@ -494,9 +493,11 @@ def agent(obs,config):
 
         # TODO: Need better logic for ship sitting on shipyard
 
+        # TODO: Spawn a ship if enemy close
+
         # If there are no ships, use first shipyard to spawn a ship.
         if len(me.ships) < MAX_UNITS:
-            if not next_map.is_occupied(shipyard.position):
+            if not heat_map.is_occupied(shipyard.position):
                 shipyard.next_action = ShipyardAction.SPAWN
             else:
                 print("Shipyard blocked from creating by ship sitting on it.")
@@ -507,17 +508,14 @@ def agent(obs,config):
     #--------------------------------------------------------------------------------
     # Actual Function Code
     #--------------------------------------------------------------------------------
-    next_map = map(size)
+    heat_map = map(size)
     print(board)
  
-    update_state()
-
     # Set actions for each ship
-    #for ship in me.ships:
     for ship in me.ships:
         ship_control(ship)
 
-    print(next_map)
+    print(heat_map)
 
     # Set actions for each shipyard
     for shipyard in me.shipyards:
