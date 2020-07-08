@@ -27,10 +27,12 @@ from enum import Enum
 import random
 
 #--------------------------------------------------------------------------------
-# Global Settings
+# Tunable Parameters
 #--------------------------------------------------------------------------------
-
 DEBUG = True
+
+SHIPYARD_HEAT_GRADE = 0
+SHIP_HEAT_GRADE = 100 
 
 # Number of gatherers to maintain
 NUMBER_OF_GATHERERS = 3
@@ -39,7 +41,6 @@ MAX_UNITS = 5
 # How much more halite must be available elsewhere to bother moving off current spot
 GATHER_MOVE_FACTOR = 1.2
 
-
 # Proximity (Manhattan distance) away that enemies need to be for a space to be 
 # considered safe
 SAFE_PROXIMITY = 2
@@ -47,16 +48,22 @@ SAFE_PROXIMITY = 2
 # Treshhold beyond which a friendly unit returns to base
 RETURN_HALITE_THRESH = 1000
 
+
+#--------------------------------------------------------------------------------
+# Global Balues
+#--------------------------------------------------------------------------------
+
+# Describes rules of the game for Haltie generation
 HALITE_GATHER_RATE = 0.25
 HALITE_REGEN_RATE  = 1.02
 
-SHIPYARD_HEAT_GRADE = 500
-SHIP_HEAT_GRADE = 500 
-
 initialized = False
 coefficient_maps = {}
+opportunity_cost = {}
 
 size = 0
+
+board = 0
 
 
 #--------------------------------------------------------------------------------
@@ -137,6 +144,13 @@ def argmax(arr, key=None):
     return arr[arr.index(max(arr, key=key)) if key else arr.index(max(arr))]
 
 #--------------------------------------------------------------------------------
+def dictmax(dictionary):  
+     v=list(dictionary.values())
+     k=list(dictionary.keys())
+     max_v = max(v)
+     return k[v.index(max_v)], max_v
+
+#--------------------------------------------------------------------------------
 def get_region(pos, depth = 2):
     ''' Returns a region (list of points) based on making 'depth' number of moves from a position.
 
@@ -156,11 +170,22 @@ def get_region(pos, depth = 2):
     return destinations
 
 #--------------------------------------------------------------------------------
+def get_avg_halite():
+    total = 0
+    cnt = 0
+    for key, values in board.cells.items():
+        total += values.halite
+        cnt += 1
+    return total/cnt
+
+#--------------------------------------------------------------------------------
 def init_coefficient_map(size):
     ''' Create a dictionary of maps which describe the distance between a position
         and all other positions on the map.  Should save computation time for
         calculating heat map
     '''
+    calc_opportunity()
+
     for x in range(size): 
         for y in range(size): 
             pos = Point(x,y)
@@ -168,37 +193,81 @@ def init_coefficient_map(size):
 
 #--------------------------------------------------------------------------------
 def init_coefficients(pos, size):
-    ''' Given a position, creates a distance coefficient overlay for it '''
+    ''' Given a position, create the opportunity cost coefficient for all other map
+        positions.  Opportunity cost is a function of distance and the halite gather rate
+    '''
     coefficient_map = {} 
     for x in range(size): 
         for y in range(size): 
             new_pos = Point(x,y)
-            coefficient_map.update({new_pos : manhattan_distance(pos,new_pos)})
+            coefficient_map.update({new_pos : opportunity_cost[manhattan_distance(pos,new_pos)]})
     return coefficient_map
 
+#--------------------------------------------------------------------------------
+def calc_opportunity(max_length = 40):
+    ''' Calculates coefficients on for how much halite would be gathered at current
+        position for various turn lengths (in essence compound depreciation).  
+    '''
+    temp = {}
+    current = 1.0
+    total = 0
+    opportunity_cost.update({0 : total})
+    for i in range(1,max_length):
+        gathered = HALITE_GATHER_RATE * current
+        total += gathered
+        current = HALITE_REGEN_RATE * (current - gathered)
+        opportunity_cost.update({i : total})
+
+#--------------------------------------------------------------------------------
+def map_to_string(map):
+    ''' Print a point based dictionary in a readable, 2D fashion
+    '''
+    just_len = 5
+    result = ''
+    for y in range(size):
+        result += str(20-y).rjust(3)
+        for x in range(size):
+            val = '%.5s' % str(map[(x, size - y - 1)])
+            result += '|'
+            result += val.rjust(just_len) if val is not None else ' '.rjust(just_len)
+                    
+        result += '|\n'
+
+    result += ' '.rjust(just_len) 
+    for x in range(size):
+        result += str(x).center(just_len + 1) 
+    result += '\n'
+    return result
 #endregion
 
 
 #--------------------------------------------------------------------------------
 # Agent
 #--------------------------------------------------------------------------------
-def agent(obs,config):
-    global initialized
-    global coefficient_maps
-    global size
+def agent(obs,config): 
 
     #Grab information up front
+    global size
     size = config.size
+
+    global board
     board = Board(obs,config)
+
     me = board.current_player
     opponents = board.opponents
 
+    avg_halite = get_avg_halite()
+
     #INITIALIZATION CODE
     #region INIT
+    global initialized
+    global coefficient_maps
+    global opportunity_cost
     if not initialized:
         print("Initializing")
         init_coefficient_map(size)
         initialized = True
+        
     #endregion
 
     #TEST CODE
@@ -210,7 +279,7 @@ def agent(obs,config):
     #region HELPER FUNCTIONS
 
     #--------------------------------------------------------------------------------
-    def get_safe_moves(pos, halite_level):
+    def get_safe_moves(pos, my_ship_halite):
         ''' Loop through possible moves and determine which are likely to be safe 
             based on proximity of enemies
         '''
@@ -218,17 +287,17 @@ def agent(obs,config):
         good_moves = []
 
         region = get_region(pos, SAFE_PROXIMITY)
-        if check_region_for_enemy(region, halite_level):
+        if check_region_for_enemy(region, my_ship_halite):
             good_moves.append(None)
                 
         for move in move_list:
             new_pos = get_new_pos(pos, move)
             region = get_region(new_pos, SAFE_PROXIMITY)
-            if check_region_for_enemy(region, halite_level, task = 'AVOID'):
+            if check_region_for_enemy(region, my_ship_halite, task = 'AVOID'):
                 good_moves.append(move)
 
     #--------------------------------------------------------------------------------
-    def check_region_for_enemy(region, halite_level, task = 'AVOID'):
+    def check_region_for_enemy(region, my_ship_halite, task = 'AVOID'):
         ''' Check a region to see if there is an enemy within it.
             Handles avoid (look for ships with less halite) and attack
             (look for ships with more halite)
@@ -241,48 +310,22 @@ def agent(obs,config):
                 cell.ship.player_id != me):
                 
                 if(task == 'ATTACK'):
-                    if(cell.ship.halite > halite_level):
+                    if(cell.ship.halite > my_ship_halite):
                         found = True
-                        next_map.add_target(cell.ship.id, pos)
+                        #next_map.add_target(cell.ship.id, pos)
                         break
 
                 if(task == 'AVOID'):
-                    if(cell.ship.halite < halite_level):
+                    if(cell.ship.halite < my_ship_halite):
                         found = True
-                        next_map.add_agressor(cell.ship.id, pos)
+                        #next_map.add_agressor(cell.ship.id, pos)
                         break
 
                 else:
                     print("check_region_for_enemy task error")
                     
         return found
-
-
-
-    #--------------------------------------------------------------------------------
-    def find_halite(ship, depth):
-        ''' Find the maximum halite available assuming we want to make 'Depth' number
-            of moves.  
-        '''
-        destinations = get_region(ship.position, depth)
-        best = argmax([item.to_index(size) for item in destinations], key=obs.halite.__getitem__)
-        return Point.from_index(best, size)
-
-    #--------------------------------------------------------------------------------
-    def halite_prediction(position, turns):
-        ''' Return how much halite would be gathered by sitting on position for X turns.
-            Useful for determining if we should move or stay put.
-        '''
-        current = board.cells[position].halite
-        total = 0
-
-        for i in range(turns):
-            gathered = HALITE_GATHER_RATE * current
-            total += gathered
-            current = HALITE_REGEN_RATE * (current - gathered)
-
-        return total
-       
+      
     #--------------------------------------------------------------------------------
     def closest_shipyard(ship):
         ''' Find closest shipyard and return to it.
@@ -308,11 +351,11 @@ def agent(obs,config):
     #endregion
 
 
-    # GAME MEMORY
-    #region GAME MEMORY
+    # HEAT MAP
+    #region HEAT MAP
 
     #--------------------------------------------------------------------------------
-    class heat(object):
+    class HeatCell(object):
         ''' Cells for my map.  Hopefully this doesn't get confusing with the other cells
         '''
         #---------------------------------------------------------------------------
@@ -321,24 +364,25 @@ def agent(obs,config):
             self.score = self._score()
             self.type = None
             self.target_count = 0
+            self._occupied = False
 
         #---------------------------------------------------------------------------
         def occupied(self, is_occupied = True):
-            if(is_occupied):
-                self.score = -1
-            else:
-                self.score = _score()
+            self._occupied = is_occupied
+
+        def is_occupied(self):
+            return self._occupied
 
         #---------------------------------------------------------------------------
         def _score(self):
             shipyard = board.cells[self._position].shipyard
             ship = board.cells[self._position].ship
 
-            if(shipyard != None and shipyard.player_id != me):
+            if(shipyard != None and shipyard.player_id != me.id):
                 self.type = CellType.ENEMY_SHIPYARD
                 return SHIPYARD_HEAT_GRADE
 
-            elif(ship != None and ship.player_id != me):
+            elif(ship != None and ship.player_id != me.id):
                 self.type = CellType.ENEMY_SHIP
                 return SHIP_HEAT_GRADE + ship.halite
 
@@ -351,7 +395,7 @@ def agent(obs,config):
             return str(self.score)
 
     #--------------------------------------------------------------------------------
-    class map(object):
+    class Map(object):
         ''' Map class similar to the board object.  Board object includes a .next() function
             that will propogate actions in the future, but it seemed easier just to plop objects
             where I want them instead of iteratively calling next as I planned.  I also may want
@@ -359,56 +403,64 @@ def agent(obs,config):
         '''
         #---------------------------------------------------------------------------
         def __init__(self, size):
-            self.cells: Dict[Point, heat] = {}
+            self.cells: Dict[Point, HeatCell] = {}
             for x in range(size): 
                 for y in range(size): 
                     pos = Point(x,y)
-                    self.cells[pos] = heat(pos)
+                    self.cells[pos] = HeatCell(pos)
             self.size = size
+
+        #---------------------------------------------------------------------------
+        def max(self):
+            return dictmax(self.cells)
            
-        #--------------------------------------------------------------------------------
+        #---------------------------------------------------------------------------
         def add_occupier(self, unit_id, position):
             self.cells[position].occupied()
 
-        #--------------------------------------------------------------------------------
+        #---------------------------------------------------------------------------
         def is_occupied(self, position):
-            if(self.cells[position].score == -1):
-                return True
-            else:
-                return False
+            return self.cells[position].is_occupied()
 
         #---------------------------------------------------------------------------
-        def __mul__(self, other):
+        def opportunity_cost(self, base_case, coeff_map):
+            ''' Calculating opportunity cost by subtracting out how much halite we
+                could have gathered if we stayed put rather than moved to a new location.
+            '''
             result = {}
             for x in range(size): 
                 for y in range(size): 
                     pos = Point(x,y)
-                    result.update({pos : self.cells[pos].score * other[pos]})
+                    result.update({pos : self.cells[pos].score - base_case*coeff_map[pos]})
             return result
 
         #--------------------------------------------------------------------------------
         def __str__(self) -> str:
-            '''
-            Use same string method as the board.
-            '''
-            just_len = 5
-            size = self.size
-            result = ''
-            for y in range(size):
-                result += str(y).rjust(3)
-                for x in range(size):
-                    val = str(self.cells[(x, size - y - 1)])
+            return map_to_string(self.cells)
 
-                    result += '|'
-                    result += val.rjust(just_len) if val is not None else ' '.rjust(just_len)
-                    
-                result += '|\n'
 
-            result += ' '.rjust(just_len) 
-            for x in range(size):
-                result += str(x).center(just_len + 1) 
-            result += '\n'
+    #--------------------------------------------------------------------------------
+    class ShipMeta(object):
+        def __init__(self, ship):
+            self.id = ship.id
+            self.position = ship.position
+            self.ship = ship
+            self.heat_map = None
+            self.destination = None
+            self.target_unit = None
+            
+
+        #---------------------------------------------------------------------------
+        def max(self):
+            pos, val = dictmax(self.heat_map)
+            self.destination = pos
+            return val
+
+        #--------------------------------------------------------------------------------
+        def __str__(self) -> str:
+            result = 'Meta:' + self.id + " at "+ str(self.position) + " dest " + str(self.destination)
             return result
+
 
     #endregion
 
@@ -436,56 +488,17 @@ def agent(obs,config):
         choices = [dir] + choices;
         for choice in choices:
             new_pos = get_new_pos(ship.position, choice)
-            if not next_map.is_occupied(new_pos):
-                next_map.add_occupier(ship.id, new_pos)
+            if not heat_map.is_occupied(new_pos):
+                heat_map.add_occupier(ship.id, new_pos)
+                print("position_deconflict: " + ship.id + ":" + str(ship.position) + " will move to: " + str(new_pos))
                 debug("position_deconflict : wanted " + str(dir) + " ended up with " + str(choice))
                 return choice;
+            else:
+                print("position_deconflict: " + ship.id + ":" + str(ship.position) + " wanted " + str(new_pos) + " but it was occupied.")
 
         print("position_deconflict error")
         return None
 
-    #--------------------------------------------------------------------------------
-    def ship_control(ship):
-        ''' Function to handle the details of assigning moves to specific ships.
-            TODO: Better logic for spawning shipyards
-        '''
-        print("Controlling ship " + ship.id)
-
-        # First see if need to make a shipyard
-        # TODO: More advanced later
-        if len(me.shipyards) == 0:
-            print("ship_control: Converting to shipyard")
-            ship.next_action = ShipAction.CONVERT
-            return
-
-        dest = ship.position
-        # Return to base if collected a lot of halite
-        if ship.halite > RETURN_HALITE_THRESH:
-            shipyard = closest_shipyard(ship)
-            dest = shipyard.position
-
-        else:
-            print("\n\nMoving ship")
-            start_map = heat_map 
-            print("\nStart map")
-            print(start_map)
-            coef_map = coefficient_maps[ship.position]
-            print("\nCoef map")
-            print(coef_map)
-            the_map = heat_map * coef_map
-            print("\nCombined map")
-            print(the_map)
-
-            pass
-
-        dir = get_direction_to(ship.position, dest)
-
-        dir = position_deconflict(ship, dir)              # Make sure we don't run into our own units
-
-        if(dir is not None):
-            ship.next_action = dir
-            print("ship_gather: next dir " + str(dir))
-  
     #--------------------------------------------------------------------------------
     def shipyard_control(shipyard):
 
@@ -501,22 +514,104 @@ def agent(obs,config):
                 shipyard.next_action = ShipyardAction.SPAWN
             else:
                 print("Shipyard blocked from creating by ship sitting on it.")
-           
+        return
+
+    #--------------------------------------------------------------------------------
+    def ship_preprocess(meta):
+        ''' Handles pre-processing steps where we want hardcoded actions for ships
+            in specific situations.
+        '''
+        print("Controlling ship " + meta.id)
+
+        # First see if need to make a shipyard
+        if len(me.shipyards) == 0:
+            print("ship_control: Converting to shipyard")
+            meta.ship.next_action = ShipAction.CONVERT
+
+        # Return to base if collected a lot of halite
+        elif ship.halite > RETURN_HALITE_THRESH:
+            shipyard = closest_shipyard(ship)
+            meta.destination = shipyard.position
+
+        else:
+            temp = heat_map.opportunity_cost(avg_halite, coefficient_maps[ship.position])
+            meta.heat_map = temp
+            to_rank.append(meta)
+            #print("Added to rank matrix:")
+            #for m in to_rank:
+            #    print(m)
+
+        meta_ships.append(meta)
+        #print("Added to Meta_Ships:")
+        #for m in meta_ships:
+        #    print(m)
+        
+    #--------------------------------------------------------------------------------
+    def ship_execute(meta):
+        ''' Final logic for translating meta actions into actual actions
+        '''
+        print("ship_execute for " + meta.id)
+        if meta.ship.next_action is None:
+            dir = get_direction_to(meta.ship.position, meta.destination)
+            dir = position_deconflict(meta.ship, dir)              # Make sure we don't run into our own units
+            if(dir is not None):
+                meta.ship.next_action = dir
+                print("ship_gather: next dir " + str(dir))
+
+        return
+
+    #--------------------------------------------------------------------------------
+    def process_rank(rank_list, remove_point = None):
+        if not rank_list:
+            return
+
+        max_val = None
+        max_meta = None
+
+        print("\n\nprocess_rank")
+
+        for meta in rank_list:
+            print(meta)
+
+            if remove_point is not None:
+                meta.heat_map[remove_point] = float("-inf")
+                
+            val = meta.max()
+            print("Local max: " + str(val) + " at " + str(meta.destination))
+            if(max_val is None or val > max_val):
+                print("This was max val.")
+                max_val = val
+                max_meta = meta
+
+        print("Selected: " + max_meta.id + " to go to: +" + str(meta.destination))
+        rank_list.remove(max_meta)
+        process_rank(rank_list, max_meta.destination)   
+              
     #endregion
 
 
     #--------------------------------------------------------------------------------
     # Actual Function Code
     #--------------------------------------------------------------------------------
-    heat_map = map(size)
+    heat_map = Map(size)
     print(board)
- 
-    # Set actions for each ship
-    for ship in me.ships:
-        ship_control(ship)
-
+    
     print(heat_map)
+     
+    # Set actions for each ship
+    to_rank = []
+    meta_ships = []
 
+    for ship in me.ships:
+        meta = ShipMeta(ship)
+        ship_preprocess(meta)
+        
+    process_rank(to_rank)
+
+    for m in meta_ships:
+        ship_execute(m)
+
+   
     # Set actions for each shipyard
     for shipyard in me.shipyards:
         shipyard_control(shipyard)
