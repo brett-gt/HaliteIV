@@ -13,7 +13,7 @@ print (env.configuration)
 
 #env.run(["Submission.py", "random","random","random"])
 #env.run(["Submission.py", "trainer_greedy.py", "random", "random"])
-env.run(["Submission.py", "trainer_planned.py", "trainer_greedy.py", "random"])
+env.run(["Submission.py", "trainer_planned.py", "trainer_greedy.py", "trainer_swarm_int.py"])
 env.render(mode="ipython", width=800, height=600)
 
 

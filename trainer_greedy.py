@@ -46,7 +46,7 @@ def agent(obs, config):
 
     for uid, shipyard in shipyards.items():
         # Maintain one ship always
-        if len(ships) == 0:
+        if len(ships) <= 20:
             action[uid] = "SPAWN"
 
     for uid, ship in ships.items():
