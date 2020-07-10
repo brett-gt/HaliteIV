@@ -19,16 +19,20 @@ import random
 #--------------------------------------------------------------------------------
 # Tunable Parameters
 #--------------------------------------------------------------------------------
-DEBUG = False
+DEBUG = True
 
 SHIPYARD_HEAT_GRADE = 0
-SHIP_HEAT_GRADE = 100 
+SHIP_HEAT_GRADE = 200 
+
+UNITS_PER_ARMADA = 5
+
+MAX_ARMADAS = 6
 
 # Give preference to not moving (i.e. if on a decent halite deposit, don't
 # move to slightly better).  Intent is for this to increase value of a square
 # a unit is currently on, therefore giving it prefernece for staying there.
 # TODO: Not implemented yet
-STAY_PUT_BONUS = 1.1
+STAY_PUT_BONUS = 1.25
 
 # If true, will use the distance to map starting point (makes assumption there
 # is a shipyard there) in opportunity cost map creation
@@ -37,15 +41,15 @@ USE_ROUND_TRIP = True
 
 # Number of gatherers to maintain
 NUMBER_OF_GATHERERS = 3
-MAX_UNITS = 30
-
 
 # Proximity (Manhattan distance) away that enemies need to be for a space to be 
 # considered safe
 SAFE_PROXIMITY = 2
 
-# Treshhold beyond which a friendly unit returns to base
-RETURN_HALITE_THRESH = 1000
+# Treshhold beyond which a friendly unit returns to base, this is multiplicative
+# with the average halite on the board (i.e. if board is heavily mined we don't
+# want a huge threshold so we keep the stream of halite going)
+RETURN_HALITE_THRESH = 12
 
 
 #--------------------------------------------------------------------------------
@@ -68,10 +72,15 @@ starting_pos = 0
 #--------------------------------------------------------------------------------
 # Global Types
 #--------------------------------------------------------------------------------
-class ShipTask(Enum):
-    NONE = 1
-    GATHER = 2
-    ATTACK = 3
+class ArmadaTask(Enum):
+    GATHER_CLOSE = 1
+    GATHER_MEDIUM = 2
+    GATHER_FAR = 3
+    ATTACK = 4
+    OPPURTUNITY = 5
+
+armada_count = 0
+armada_tasks = [ArmadaTask.GATHER_CLOSE, ArmadaTask.GATHER_CLOSE, ArmadaTask.GATHER_MEDIUM, ArmadaTask.GATHER_FAR, ArmadaTask.ATTACK, ArmadaTask.OPPURTUNITY]
 
 class CellType(Enum):
     HALITE = 1
@@ -215,7 +224,7 @@ def calc_opportunity_array(max_length = 40):
         #gathered = HALITE_GATHER_RATE * current
         #total += gathered
         #current = HALITE_REGEN_RATE * (current - gathered)
-        total += 0.25
+        total += 2*HALITE_GATHER_RATE
         opportunity_cost.update({i : total})
 
 
@@ -266,11 +275,13 @@ def agent(obs,config):
     global coefficient_maps
     global opportunity_cost
     global starting_pos
+    global armada_count
     if not initialized:
         print("Initializing")
         init_coefficient_map(size)
         initialized = True
         starting_pos = me.ships[0].position
+        armada_count = 0
         
     #endregion
 
@@ -360,9 +371,8 @@ def agent(obs,config):
     #endregion
 
 
-    # HEAT MAP
-    #region HEAT MAP
-
+# HEAT MAP
+#region HEAT MAP
     #--------------------------------------------------------------------------------
     class HeatCell(object):
         ''' Cells for my map.  Hopefully this doesn't get confusing with the other cells
@@ -393,7 +403,7 @@ def agent(obs,config):
 
             elif(ship != None and ship.player_id != me.id):
                 self.type = CellType.ENEMY_SHIP
-                return SHIP_HEAT_GRADE + ship.halite
+                return SHIP_HEAT_GRADE# + ship.halite)/avg_halite
 
             else:
                 self.type = CellType.HALITE
@@ -451,8 +461,10 @@ def agent(obs,config):
         #--------------------------------------------------------------------------------
         def __str__(self) -> str:
             return map_to_string(self.cells)
+#end region
 
-
+# SHIP/ARMADA CLASSES
+#region 
     #--------------------------------------------------------------------------------
     class ShipMeta(object):
         def __init__(self, ship):
@@ -486,6 +498,17 @@ def agent(obs,config):
             result = 'Meta:' + self.id + " at "+ str(self.position) + " dest " + str(self.destination)
             return result
 
+    #--------------------------------------------------------------------------------
+    class Armada(object):
+        def __init__(self, task):
+            self.ships = []
+            self.task = task
+
+        def add_ship(self, ship):
+            self.ships.append(ship)
+
+        def remove_ship(self, ship_id):
+            pass
 
     #endregion
 
@@ -558,26 +581,29 @@ def agent(obs,config):
         ''' Handles pre-processing steps where we want hardcoded actions for ships
             in specific situations.
         '''
-        debug("Controlling ship " + meta.id)
+        print("Controlling ship " + meta.id + " halite: " + str(meta.ship.halite))
 
         # First see if need to make a shipyard
         if len(me.shipyards) == 0:
             debug("ship_control: Converting to shipyard")
             meta.ship.next_action = ShipAction.CONVERT
 
+
+
         # Return to base if collected a lot of halite
-        elif ship.halite > RETURN_HALITE_THRESH:
+        elif ship.halite > RETURN_HALITE_THRESH * avg_halite:
             shipyard = closest_shipyard(ship)
             meta.destination = shipyard.position
+            print(ship.id + " is full.  Returning to " + str(meta.destination))
 
         else:
-            print(heat_map)
+            #print(heat_map)
 
-            print(map_to_string(coefficient_maps[ship.position]))
+            #print(map_to_string(coefficient_maps[ship.position]))
 
             meta.create_heat_map(heat_map, coefficient_maps[ship.position])   
 
-            print(map_to_string(meta.heat_map))
+            #print(map_to_string(meta.heat_map))
 
             to_rank.append(meta)
             #print("Added to rank matrix:")
