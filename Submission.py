@@ -21,6 +21,8 @@ import random
 #--------------------------------------------------------------------------------
 DEBUG = True
 
+MAX_UNITS = 30 #TODO: Delte
+
 SHIPYARD_HEAT_GRADE = 0
 SHIP_HEAT_GRADE = 200 
 
@@ -53,9 +55,8 @@ RETURN_HALITE_THRESH = 12
 
 
 #--------------------------------------------------------------------------------
-# Global Balues
+# Global Values
 #--------------------------------------------------------------------------------
-
 # Describes rules of the game for Haltie generation
 HALITE_GATHER_RATE = 0.25
 HALITE_REGEN_RATE  = 1.02
@@ -67,10 +68,48 @@ opportunity_cost = {}
 size = 0
 board = 0
 starting_pos = 0
-
+me = 0
+opponents = 0
 
 #--------------------------------------------------------------------------------
 # Global Types
+#--------------------------------------------------------------------------------
+
+# SHIP/ARMADA CLASSES
+#region 
+#--------------------------------------------------------------------------------
+class ShipMeta(object):
+    def __init__(self, ship):
+        self.id = ship.id
+        self.position = ship.position
+        self.ship = ship
+        self.heat_map = None
+        self.destination = None
+        self.target_unit = None
+
+    #---------------------------------------------------------------------------
+    def create_heat_map(self, base_map, coeff_map, avg_halite):
+        self.heat_map = base_map.create_opportunity_map(avg_halite, coeff_map)
+
+        # Scrubs the heat map to make sure this ship doesn't pursue enemy ships with more halite 
+        # TODO: Look for cleaner implementation 
+        for player in opponents: #TODO: Global variable dependency
+            for enemy in player.ships:
+                if(enemy.halite <= self.ship.halite):
+                    self.heat_map[enemy.position] = -1000
+        return
+
+    #---------------------------------------------------------------------------
+    def max(self):
+        pos, val = dictmax(self.heat_map)
+        self.destination = pos
+        return val
+
+    #--------------------------------------------------------------------------------
+    def __str__(self) -> str:
+        result = 'Meta:' + self.id + " at "+ str(self.position) + " dest " + str(self.destination)
+        return result
+
 #--------------------------------------------------------------------------------
 class ArmadaTask(Enum):
     GATHER_CLOSE = 1
@@ -81,6 +120,186 @@ class ArmadaTask(Enum):
 
 armada_count = 0
 armada_tasks = [ArmadaTask.GATHER_CLOSE, ArmadaTask.GATHER_CLOSE, ArmadaTask.GATHER_MEDIUM, ArmadaTask.GATHER_FAR, ArmadaTask.ATTACK, ArmadaTask.OPPURTUNITY]
+
+#--------------------------------------------------------------------------------
+class Armada(object):
+    def __init__(self, num, task):
+        self.num = num
+        self.ships = []
+        self.task = task
+        self.target_pos = 0
+        self._area = 0
+
+    def add_ship(self, ship):
+        self.ships.append(ship)
+        print("Armada[" + str(self.num) + "].add_ship : " + str(ship.id))
+
+    def remove_dead(self, ships_list):
+        for ship in self.ships:
+            if ship.id not in ships_list:
+                print("Armada[" + str(self.num) + "].remove_dead: Removing " + ship.id)
+                self.ships.remove(ship)
+
+    def set_target(self, pos):
+        self.target_pos = pos
+
+    def set_area(self, area):
+        self.area = area
+
+    def contains_ship(self, ship_id):
+        for ship in self.ships:
+            if ship.id == ship_id:
+                return True
+        return False
+
+    def full(self):
+        if len(self.ships) < UNITS_PER_ARMADA:
+            return False
+        else:
+            return True
+
+    def __str__(self) -> str:
+        result = 'Armada:' + str(self.num) + " task " + str(self.task) + ": "
+        for ship in self.ships:
+            result += ship.id + " "
+        return result
+
+#--------------------------------------------------------------------------------
+class FleetManager(object):
+    def __init__(self):
+        self.armadas = [None] * MAX_ARMADAS
+        for i in range(MAX_ARMADAS):
+            self.armadas[i] = Armada(i, armada_tasks[i])
+
+
+    def update(self, my_ships):
+        for arm in self.armadas: arm.remove_dead([x.id for x in my_ships])
+
+        for ship in my_ships:
+            in_fleet = False
+            for arm in self.armadas: 
+                if arm.contains_ship(ship.id):
+                    in_fleet = True
+                    break
+
+            if not in_fleet:
+                self.add_ship(ship)
+
+    def add_ship(self, ship):
+        for arm in self.armadas: 
+            if not arm.full():
+                arm.add_ship(ship)
+                print("FleetManager: Added ship to " + str(arm.num))
+                return
+        return
+       
+    def __str__(self) -> str:
+        result = "\nFleet:\n"
+        for arm in self.armadas:
+            result += str(arm) + "\n"
+        return result
+
+fleet_manager = FleetManager()
+
+#endregion
+
+
+# HEAT MAP
+#region
+#--------------------------------------------------------------------------------
+class HeatCell(object):
+    ''' Cells for my map.  Hopefully this doesn't get confusing with the other cells
+    '''
+    #---------------------------------------------------------------------------
+    def __init__(self, position):
+        self._position = position
+        self.score = self._score()
+        self.type = None
+        self.target_count = 0
+        self.assigned_armada = None
+        self._occupied = False
+
+    #---------------------------------------------------------------------------
+    def occupied(self, is_occupied = True):
+        self._occupied = is_occupied
+
+    def is_occupied(self):
+        return self._occupied
+
+    #---------------------------------------------------------------------------
+    def _score(self):
+        shipyard = board.cells[self._position].shipyard
+        ship = board.cells[self._position].ship
+
+        if(shipyard != None and shipyard.player_id != me.id):
+            self.type = CellType.ENEMY_SHIPYARD
+            return SHIPYARD_HEAT_GRADE
+
+        elif(ship != None and ship.player_id != me.id):
+            self.type = CellType.ENEMY_SHIP
+            return SHIP_HEAT_GRADE# + ship.halite)/avg_halite
+
+        else:
+            self.type = CellType.HALITE
+            return board.cells[self._position].halite
+
+    #---------------------------------------------------------------------------
+    def __str__(self) -> str:
+        return str(self.score)
+
+#--------------------------------------------------------------------------------
+class HeatMap(object):
+    ''' Map class similar to the board object.  Board object includes a .next() function
+        that will propogate actions in the future, but it seemed easier just to plop objects
+        where I want them instead of iteratively calling next as I planned.  I also may want
+        to go multiple turns in future.  
+    '''
+    #---------------------------------------------------------------------------
+    def __init__(self, size):
+        self.cells: Dict[Point, HeatCell] = {}
+        for x in range(size): 
+            for y in range(size): 
+                pos = Point(x,y)
+                self.cells[pos] = HeatCell(pos)
+        self.size = size
+
+    #---------------------------------------------------------------------------
+    def max(self):
+        return dictmax(self.cells)
+           
+    #---------------------------------------------------------------------------
+    def add_occupier(self, unit_id, position):
+        self.cells[position].occupied()
+
+    #---------------------------------------------------------------------------
+    def is_occupied(self, position):
+        return self.cells[position].is_occupied()
+
+    #---------------------------------------------------------------------------
+    def create_opportunity_map(self, base_case, coeff_map):
+        ''' Calculating opportunity cost by subtracting out how much halite we
+            could have gathered if we stayed put rather than moved to a new location.
+        '''
+        result = {}
+        for x in range(size): 
+            for y in range(size): 
+                pos = Point(x,y)
+                cost = self.cells[pos].score - base_case * coeff_map[pos]
+                result.update({pos : cost})
+        return result
+
+    #---------------------------------------------------------------------------
+    def calc_opportunity_cost(self, cell_score, base_case,  coeff):
+        return 
+
+    #--------------------------------------------------------------------------------
+    def __str__(self) -> str:
+        return map_to_string(self.cells)
+
+    #--------------------------------------------------------------------------------
+    def __str__(self) -> str:
+        return map_to_string(self.cells)
+#end region
 
 class CellType(Enum):
     HALITE = 1
@@ -159,10 +378,9 @@ def dictmax(dictionary):
      return k[v.index(max_v)], max_v
 
 #--------------------------------------------------------------------------------
-def get_region(pos, depth = 2):
+def get_moves_region(pos, depth = 2):
     ''' Returns a region (list of points) based on making 'depth' number of moves from a position.
-
-        TODO: This probably isn't most efficient implementation.
+        Useful for limiting area to X number of moves away.
     '''
     current = [pos] + get_neighbors(pos)
     destinations = current
@@ -176,6 +394,24 @@ def get_region(pos, depth = 2):
         current = next_level
 
     return destinations
+
+#--------------------------------------------------------------------------------
+def get_area_region(pos, half_length):
+    ''' Returns square area with side equal to 2 * half_length + 1
+    '''
+    result = []
+    for i in range(2*half_length + 1):
+        x = (pos.x - half_length) + i
+        y = (pos.y - half_length) + i
+
+        if(x < 0): x += size
+        if(y < 0): y += size
+        if(x >= size): x -= size
+        if(y >= size): y -= size
+
+        result.append(Point(x,y))
+
+    return result
 
 #--------------------------------------------------------------------------------
 def get_avg_halite():
@@ -263,11 +499,15 @@ def agent(obs,config):
     global board
     board = Board(obs,config)
 
+    global me
     me = board.current_player
+
+    global opponents
     opponents = board.opponents
 
     avg_halite = get_avg_halite()
     print("Average halite: " + str(avg_halite))
+
 
     #INITIALIZATION CODE
     #region INIT
@@ -301,15 +541,16 @@ def agent(obs,config):
         move_list = ShipAction.moves() 
         good_moves = []
 
-        region = get_region(pos, SAFE_PROXIMITY)
+        region = get_moves_region(pos, SAFE_PROXIMITY)
         if check_region_for_enemy(region, my_ship_halite):
             good_moves.append(None)
                 
         for move in move_list:
             new_pos = get_new_pos(pos, move)
-            region = get_region(new_pos, SAFE_PROXIMITY)
+            region = get_moves_region(new_pos, SAFE_PROXIMITY)
             if check_region_for_enemy(region, my_ship_halite, task = 'AVOID'):
                 good_moves.append(move)
+        return
 
     #--------------------------------------------------------------------------------
     def check_region_for_enemy(region, task = 'AVOID', my_ship_halite = 0):
@@ -370,147 +611,6 @@ def agent(obs,config):
 
     #endregion
 
-
-# HEAT MAP
-#region HEAT MAP
-    #--------------------------------------------------------------------------------
-    class HeatCell(object):
-        ''' Cells for my map.  Hopefully this doesn't get confusing with the other cells
-        '''
-        #---------------------------------------------------------------------------
-        def __init__(self, position):
-            self._position = position
-            self.score = self._score()
-            self.type = None
-            self.target_count = 0
-            self._occupied = False
-
-        #---------------------------------------------------------------------------
-        def occupied(self, is_occupied = True):
-            self._occupied = is_occupied
-
-        def is_occupied(self):
-            return self._occupied
-
-        #---------------------------------------------------------------------------
-        def _score(self):
-            shipyard = board.cells[self._position].shipyard
-            ship = board.cells[self._position].ship
-
-            if(shipyard != None and shipyard.player_id != me.id):
-                self.type = CellType.ENEMY_SHIPYARD
-                return SHIPYARD_HEAT_GRADE
-
-            elif(ship != None and ship.player_id != me.id):
-                self.type = CellType.ENEMY_SHIP
-                return SHIP_HEAT_GRADE# + ship.halite)/avg_halite
-
-            else:
-                self.type = CellType.HALITE
-                return board.cells[self._position].halite
-
-        #---------------------------------------------------------------------------
-        def __str__(self) -> str:
-            return str(self.score)
-
-    #--------------------------------------------------------------------------------
-    class Map(object):
-        ''' Map class similar to the board object.  Board object includes a .next() function
-            that will propogate actions in the future, but it seemed easier just to plop objects
-            where I want them instead of iteratively calling next as I planned.  I also may want
-            to go multiple turns in future.  
-        '''
-        #---------------------------------------------------------------------------
-        def __init__(self, size):
-            self.cells: Dict[Point, HeatCell] = {}
-            for x in range(size): 
-                for y in range(size): 
-                    pos = Point(x,y)
-                    self.cells[pos] = HeatCell(pos)
-            self.size = size
-
-        #---------------------------------------------------------------------------
-        def max(self):
-            return dictmax(self.cells)
-           
-        #---------------------------------------------------------------------------
-        def add_occupier(self, unit_id, position):
-            self.cells[position].occupied()
-
-        #---------------------------------------------------------------------------
-        def is_occupied(self, position):
-            return self.cells[position].is_occupied()
-
-        #---------------------------------------------------------------------------
-        def create_opportunity_map(self, base_case, coeff_map):
-            ''' Calculating opportunity cost by subtracting out how much halite we
-                could have gathered if we stayed put rather than moved to a new location.
-            '''
-            result = {}
-            for x in range(size): 
-                for y in range(size): 
-                    pos = Point(x,y)
-                    cost = self.cells[pos].score - base_case * coeff_map[pos]
-                    result.update({pos : cost})
-            return result
-
-        #---------------------------------------------------------------------------
-        def calc_opportunity_cost(self, cell_score, base_case,  coeff):
-            return 
-
-        #--------------------------------------------------------------------------------
-        def __str__(self) -> str:
-            return map_to_string(self.cells)
-#end region
-
-# SHIP/ARMADA CLASSES
-#region 
-    #--------------------------------------------------------------------------------
-    class ShipMeta(object):
-        def __init__(self, ship):
-            self.id = ship.id
-            self.position = ship.position
-            self.ship = ship
-            self.heat_map = None
-            self.destination = None
-            self.target_unit = None
-
-        #---------------------------------------------------------------------------
-        def create_heat_map(self, base_map, coeff_map):
-            self.heat_map = base_map.create_opportunity_map(avg_halite, coeff_map)
-
-            # Scrubs the heat map to make sure this ship doesn't pursue enemy ships with more halite 
-            # TODO: Look for cleaner implementation 
-            for player in opponents: #TODO: Global variable dependency
-                for enemy in player.ships:
-                    if(enemy.halite <= self.ship.halite):
-                        self.heat_map[enemy.position] = -1000
-            return
-
-        #---------------------------------------------------------------------------
-        def max(self):
-            pos, val = dictmax(self.heat_map)
-            self.destination = pos
-            return val
-
-        #--------------------------------------------------------------------------------
-        def __str__(self) -> str:
-            result = 'Meta:' + self.id + " at "+ str(self.position) + " dest " + str(self.destination)
-            return result
-
-    #--------------------------------------------------------------------------------
-    class Armada(object):
-        def __init__(self, task):
-            self.ships = []
-            self.task = task
-
-        def add_ship(self, ship):
-            self.ships.append(ship)
-
-        def remove_ship(self, ship_id):
-            pass
-
-    #endregion
 
     #region CONTROL FUNCTIONS
 
@@ -588,8 +688,6 @@ def agent(obs,config):
             debug("ship_control: Converting to shipyard")
             meta.ship.next_action = ShipAction.CONVERT
 
-
-
         # Return to base if collected a lot of halite
         elif ship.halite > RETURN_HALITE_THRESH * avg_halite:
             shipyard = closest_shipyard(ship)
@@ -601,7 +699,7 @@ def agent(obs,config):
 
             #print(map_to_string(coefficient_maps[ship.position]))
 
-            meta.create_heat_map(heat_map, coefficient_maps[ship.position])   
+            meta.create_heat_map(heat_map, coefficient_maps[ship.position], avg_halite)   
 
             #print(map_to_string(meta.heat_map))
 
@@ -662,10 +760,13 @@ def agent(obs,config):
     #--------------------------------------------------------------------------------
     # Actual Function Code
     #--------------------------------------------------------------------------------
-    heat_map = Map(size)
+    heat_map = HeatMap(size)
     print(board)
     
     print(heat_map)
+
+    fleet_manager.update(me.ships)
+    print(fleet_manager)
      
     # Set actions for each ship
     to_rank = []
