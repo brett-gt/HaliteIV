@@ -109,101 +109,6 @@ class ShipMeta(object):
     def __str__(self) -> str:
         result = 'Meta:' + self.id + " at "+ str(self.position) + " dest " + str(self.destination)
         return result
-
-#--------------------------------------------------------------------------------
-class ArmadaTask(Enum):
-    GATHER_CLOSE = 1
-    GATHER_MEDIUM = 2
-    GATHER_FAR = 3
-    ATTACK = 4
-    OPPURTUNITY = 5
-
-armada_count = 0
-armada_tasks = [ArmadaTask.GATHER_CLOSE, ArmadaTask.GATHER_CLOSE, ArmadaTask.GATHER_MEDIUM, ArmadaTask.GATHER_FAR, ArmadaTask.ATTACK, ArmadaTask.OPPURTUNITY]
-
-#--------------------------------------------------------------------------------
-class Armada(object):
-    def __init__(self, num, task):
-        self.num = num
-        self.ships = []
-        self.task = task
-        self.target_pos = 0
-        self._area = 0
-
-    def add_ship(self, ship):
-        self.ships.append(ship)
-        print("Armada[" + str(self.num) + "].add_ship : " + str(ship.id))
-
-    def remove_dead(self, ships_list):
-        for ship in self.ships:
-            if ship.id not in ships_list:
-                print("Armada[" + str(self.num) + "].remove_dead: Removing " + ship.id)
-                self.ships.remove(ship)
-
-    def set_target(self, pos):
-        self.target_pos = pos
-
-    def set_area(self, area):
-        self.area = area
-
-    def contains_ship(self, ship_id):
-        for ship in self.ships:
-            if ship.id == ship_id:
-                return True
-        return False
-
-    def full(self):
-        if len(self.ships) < UNITS_PER_ARMADA:
-            return False
-        else:
-            return True
-
-    def __str__(self) -> str:
-        result = 'Armada:' + str(self.num) + " task " + str(self.task) + ": "
-        for ship in self.ships:
-            result += ship.id + " "
-        return result
-
-#--------------------------------------------------------------------------------
-class FleetManager(object):
-    def __init__(self):
-        self.armadas = [None] * MAX_ARMADAS
-        for i in range(MAX_ARMADAS):
-            self.armadas[i] = Armada(i, armada_tasks[i])
-
-
-    def update(self, my_ships):
-        for arm in self.armadas: arm.remove_dead([x.id for x in my_ships])
-
-        for ship in my_ships:
-            in_fleet = False
-            for arm in self.armadas: 
-                if arm.contains_ship(ship.id):
-                    in_fleet = True
-                    break
-
-            if not in_fleet:
-                self.add_ship(ship)
-
-    def add_ship(self, ship):
-        for arm in self.armadas: 
-            if not arm.full():
-                arm.add_ship(ship)
-                print("FleetManager: Added ship to " + str(arm.num))
-                return
-        return
-       
-    def __str__(self) -> str:
-        result = "\nFleet:\n"
-        for arm in self.armadas:
-            result += str(arm) + "\n"
-        return result
-
-fleet_manager = FleetManager()
-
-#endregion
-
-
 # HEAT MAP
 #region
 #--------------------------------------------------------------------------------
@@ -515,13 +420,11 @@ def agent(obs,config):
     global coefficient_maps
     global opportunity_cost
     global starting_pos
-    global armada_count
     if not initialized:
         print("Initializing")
         init_coefficient_map(size)
         initialized = True
         starting_pos = me.ships[0].position
-        armada_count = 0
         
     #endregion
 
@@ -765,9 +668,7 @@ def agent(obs,config):
     
     print(heat_map)
 
-    fleet_manager.update(me.ships)
-    print(fleet_manager)
-     
+    
     # Set actions for each ship
     to_rank = []
     meta_ships = []
