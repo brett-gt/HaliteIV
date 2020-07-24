@@ -1,4 +1,27 @@
     #--------------------------------------------------------------------------------
+    def get_safe_moves(pos, my_ship_halite):
+        ''' Loop through possible moves and determine which are likely to be safe 
+            based on proximity of enemies
+        '''
+        #TODO: Candidate for removal
+
+        move_list = ShipAction.moves() 
+        good_moves = []
+
+        region = get_moves_region(pos, SAFE_PROXIMITY)
+        if check_region_for_enemy(region, my_ship_halite):
+            good_moves.append(None)
+                
+        for move in move_list:
+            new_pos = get_new_pos(pos, move)
+            region = get_moves_region(new_pos, SAFE_PROXIMITY)
+            if check_region_for_enemy(region, my_ship_halite, task = 'AVOID'):
+                good_moves.append(move)
+        return
+  
+
+
+#--------------------------------------------------------------------------------
     class map(object):
         ''' Map class similar to the board object.  It looked like board object would
         be difficult to use for my intended purpose so creating a subset of it

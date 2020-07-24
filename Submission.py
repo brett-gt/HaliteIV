@@ -12,24 +12,27 @@
 
 from kaggle_environments.envs.halite.helpers import *
 import numpy as np
-from math import sqrt
+import math
 from enum import Enum
 import random
+from operator import attrgetter
 
 #--------------------------------------------------------------------------------
 # Tunable Parameters
 #--------------------------------------------------------------------------------
 DEBUG = False
 
-MAX_UNITS = 30
+MAX_UNITS = 20
 
 SHIPYARD_HEAT_GRADE = 0
-SHIP_HEAT_GRADE = 200 
+SHIP_HEAT_GRADE = 0 
 
 # Give preference to not moving (i.e. if on a decent halite deposit, don't
 # move to slightly better).  Intent is for this to increase value of a square
 # a unit is currently on, therefore giving it prefernece for staying there.
 STAY_PUT_BONUS = 2.0
+
+CLOSE_TO_HOME_MULTI = 1.0
 
 # Proximity (Manhattan distance) away that enemies need to be for a space to be 
 # considered safe
@@ -39,7 +42,7 @@ SAFE_PROXIMITY = 2
 # with the average halite on the board (i.e. if board is heavily mined we don't
 # want a huge threshold so we keep the stream of halite going)
 RETURN_HALITE_THRESH = 20
-RETURN_HALITE_MIN = 500
+RETURN_HALITE_MIN = 1000
 
 #--------------------------------------------------------------------------------
 # Global Values
@@ -225,6 +228,20 @@ def get_direction_to(fromPos, toPos, possList=[True, True, True, True]):
     return None
 
 #--------------------------------------------------------------------------------
+def angle_to_pos(fromPos, toPos):
+    ''' Returns angle between two points
+    '''
+    fromX, fromY = fromPos[0], fromPos[1]
+    toX, toY = toPos[0], toPos[1]
+    if abs(fromX - toX) > size / 2:
+        fromX += size
+    if abs(fromY - toY) > size / 2:
+        fromY += size
+
+    return  math.degrees(math.atan2(toY - fromY, toX - fromX))
+
+
+#--------------------------------------------------------------------------------
 def get_new_pos(pos, direction):
     '''Gets the position that is the result of moving from the given position in the given direction.
     '''
@@ -284,7 +301,7 @@ def map_add(map1, map2):
     #TODO: Should put checks in for key not existing in other map
     result = {}
     for key in map1.keys():
-        result[key] = 2.0 * map1[key] + map2[key]
+        result[key] = CLOSE_TO_HOME_MULTI * map1[key] + map2[key]
     return result
         
         
@@ -296,14 +313,13 @@ def get_moves_region(pos, depth = 2):
     current = [pos] + get_neighbors(pos)
     destinations = current
 
-    for i in range(2,depth):
+    for i in range(1,depth):
         next_level = []
         for dest in current:
             candidates = [x for x in get_neighbors(dest) if x not in destinations]
             destinations = destinations + candidates
             next_level = next_level + candidates
         current = next_level
-
     return destinations
 
 #--------------------------------------------------------------------------------
@@ -438,24 +454,57 @@ def agent(obs,config):
     # CONTROL HELPERS
     #region HELPER FUNCTIONS
 
-    #--------------------------------------------------------------------------------
-    def get_safe_moves(pos, my_ship_halite):
-        ''' Loop through possible moves and determine which are likely to be safe 
-            based on proximity of enemies
-        '''
-        move_list = ShipAction.moves() 
-        good_moves = []
 
-        region = get_moves_region(pos, SAFE_PROXIMITY)
-        if check_region_for_enemy(region, my_ship_halite):
-            good_moves.append(None)
-                
-        for move in move_list:
-            new_pos = get_new_pos(pos, move)
-            region = get_moves_region(new_pos, SAFE_PROXIMITY)
-            if check_region_for_enemy(region, my_ship_halite, task = 'AVOID'):
-                good_moves.append(move)
-        return
+    #--------------------------------------------------------------------------------
+    def get_enemies_in_region(region):
+        ''' Return a list of all enemies in a region
+        '''
+        enemies = []
+        for pos in region:
+            cell = board.cells[pos]
+
+            #if(cell.ship is not None):
+            #    print("get_enemies_in_region: " + str(pos) + " has ship: " + str(cell.ship.id) + " owned by player: " + str(cell.ship.player_id))
+            #else:
+            #    print("get_enemies_in_region: " + str(pos) + " no ships.")
+
+            if (cell.ship is not None and cell.ship.player_id != me.id):
+                enemies.append(cell.ship)
+
+        return enemies
+
+    #--------------------------------------------------------------------------------
+    def flee_enemies(pos, enemies):
+        print("flee_enemies: " + str(len(enemies)) + " from " + str(pos))
+
+        total = 0
+        for en in enemies:
+            print("flee_enemies: angle to " + str(en.position) + " is " + str(angle_to_pos(pos, en.position)))
+            total += angle_to_pos(pos, en.position)
+
+        avg_angle = total/len(enemies)
+        print("flee_enemies: avg_angle = " + str(avg_angle))
+
+        opposite = avg_angle + 180
+        if(opposite > 360): 
+            opposite -= 180
+
+        print("flee_enemies: opposite = " + str(opposite))
+
+        print("flee_enemies: " + str(move_from_angle(opposite)))
+        return move_from_angle(opposite)
+
+    
+    #--------------------------------------------------------------------------------
+    def move_from_angle(angle):
+        if(angle < 45 and angle >= 315):
+            return ShipAction.EAST
+        elif(angle < 115 and angle >= 45):
+            return ShipAction.NORTH
+        elif(angle < 225 and angle >= 115):
+            return ShipAction.WEST
+        else:
+            return ShipAction.SOUTH
 
     #--------------------------------------------------------------------------------
     def check_region_for_enemy(region, task = 'AVOID', my_ship_halite = 0):
@@ -518,7 +567,6 @@ def agent(obs,config):
 
 
     #region CONTROL FUNCTIONS
-
     #--------------------------------------------------------------------------------
     def position_deconflict(ship, dir):
         ''' Function to handle deconfliction when a ship wants to move into an occupied
@@ -555,18 +603,13 @@ def agent(obs,config):
     #--------------------------------------------------------------------------------
     def shipyard_control(shipyard):
         # TODO: Needs updating for multiple shipyards
-
         # TODO: Need better logic for ship sitting on shipyard
-
-        # TODO: Spawn a ship if enemy close
-
         spawn = False
-
         if(base_map.is_occupied(shipyard.position)):
             spawn = False
             print("Shipyard " + shipyard.id + " blocked from creating by ship sitting on it.")
 
-        elif len(me.ships) < MAX_UNITS and me.halite >= 1000:
+        elif len(me.ships) < MAX_UNITS and me.halite >= 500:
             spawn = True
 
         elif check_region_for_enemy(get_neighbors(shipyard.position), 'SHIPYARD_DEFENSE'):
@@ -583,42 +626,47 @@ def agent(obs,config):
         ''' Handles pre-processing steps where we want hardcoded actions for ships
             in specific situations.
         '''
-        print("Controlling ship " + meta.id + " halite: " + str(meta.ship.halite))
+        print("ship_preprocess: ship " + meta.id + " at: " + str(meta.ship.position) + " halite: " + str(meta.ship.halite))
 
-        # First see if need to make a shipyard
         if len(me.shipyards) == 0:
-            debug("ship_control: Converting to shipyard")
+            debug("ship_preprocess: Converting to shipyard")
             meta.ship.next_action = ShipAction.CONVERT
+            return
 
-        # Return to base if collected a lot of halite
-        elif ship.halite > max(RETURN_HALITE_THRESH * avg_halite, RETURN_HALITE_MIN):
+        region = get_moves_region(meta.ship.position, SAFE_PROXIMITY)
+        enemies = get_enemies_in_region(region)
+        if enemies:
+            dir = flee_enemies(meta.ship.position, enemies)
+            meta.ship.next_action = position_deconflict(meta.ship, dir)
+            return
+
+        #Return to base if ship has a lot of halite or Me(player) is low on halite and this ship has most halite
+        if (meta.ship.halite > RETURN_HALITE_MIN) or (return_candidate is not None and meta.ship.id == return_candidate.id):
             shipyard = closest_shipyard(ship)
             meta.destination = shipyard.position
-            print(ship.id + " is full.  Returning to " + str(meta.destination))
+            print("ship_preprocess: " + ship.id + " is returning to base.  Returning to " + str(meta.destination))
 
         else:
             #TODO:  Move this function elsewhere
             meta.create_heat_map(base_map, avg_halite, coefficient_maps[ship.position], return_path)   
-
             to_rank.append(meta)
-            #print("Added to rank matrix:")
-            #for m in to_rank:
-            #    print(m)
 
         meta_ships.append(meta)
-        #print("Added to Meta_Ships:")
-        #for m in meta_ships:
-        #    print(m)
+
         
     #--------------------------------------------------------------------------------
     def ship_execute(meta):
         ''' Final logic for translating meta actions into actual actions
         '''
         print("ship_execute for " + meta.id)
+
         if meta.ship.next_action is None:
             dir = get_direction_to(meta.ship.position, meta.destination)
+
             print("ship_execute for " + meta.id + " at: " + str(meta.ship.position) + " wants to go to: " + str(meta.destination))
+
             dir = position_deconflict(meta.ship, dir)              # Make sure we don't run into our own units
+
             if(dir is not None):
                 meta.ship.next_action = dir
                 print("ship_execute: next dir " + str(dir))
@@ -664,7 +712,8 @@ def agent(obs,config):
     print("Base map")
     print(base_map)
 
-    # Set actions for each shipyard
+    # Calculate opportunity cost for returning haltie to a shipyard
+    # TODO: Account for multiple shipyards
     return_path = coefficient_maps[Point(0,0)]  #TODO: Set some default
     if len(me.shipyards) > 0: 
         return_path = coefficient_maps[me.shipyards[0].position]
@@ -675,6 +724,13 @@ def agent(obs,config):
     # Set actions for each ship
     to_rank = []
     meta_ships = []
+
+    #Figure out ship that is best candidate to return to base if we are low on halite
+    return_candidate = None
+    if me.halite < RETURN_HALITE_MIN: 
+        return_candidate = max(me.ships, key = attrgetter('halite')) if len(me.ships) > 0 else None
+        if return_candidate.halite < 500: return_candidate = None
+        print("Return candidate: " + return_candidate.id + " with " + str(return_candidate.halite) + " halite.") if return_candidate is not None else print (" ")
 
     for ship in me.ships:
         meta = ShipMeta(ship)
@@ -689,5 +745,4 @@ def agent(obs,config):
     for shipyard in me.shipyards:
         shipyard_control(shipyard)
 
-    
     return me.next_actions
