@@ -24,15 +24,19 @@ DEBUG = False
 
 MAX_UNITS = 20
 
+#Heat grade for an enemy shipyard, setting this high will make our units want to attack enemy shipyards
 SHIPYARD_HEAT_GRADE = 0
+
+#Heat grade for an enemy ships, SHIP_USE_CARGO makes the halite onboard an enemy ship addative (will target enemies with lots of halite)
 SHIP_HEAT_GRADE = 0 
+SHIP_USE_CARGO = False    
 
 # Give preference to not moving (i.e. if on a decent halite deposit, don't
 # move to slightly better).  Intent is for this to increase value of a square
 # a unit is currently on, therefore giving it prefernece for staying there.
 STAY_PUT_BONUS = 2.0
 
-CLOSE_TO_HOME_MULTI = 1.0
+CLOSE_TO_HOME_MULTI = 1.5
 
 # Proximity (Manhattan distance) away that enemies need to be for a space to be 
 # considered safe
@@ -93,7 +97,7 @@ class ShipMeta(object):
         for player in opponents: #TODO: Global variable dependency
             for enemy in player.ships:
                 if(enemy.halite <= self.ship.halite):
-                    self.heat_map[enemy.position] = -1000       
+                    self.heat_map[enemy.position] = float("-inf")      
         return
 
     #---------------------------------------------------------------------------
@@ -116,8 +120,8 @@ class HeatCell(object):
     #---------------------------------------------------------------------------
     def __init__(self, position):
         self._position = position
-        self.score = self._score()
         self.type = None
+        self.score = self._score()
         self.target_count = 0
         self.assigned_armada = None
         self._occupied = False
@@ -128,6 +132,16 @@ class HeatCell(object):
 
     def is_occupied(self):
         return self._occupied
+
+
+    #---------------------------------------------------------------------------
+    def is_mutex(self):
+        if(self.type == CellType.HALITE):
+            return True
+        elif(self.type == CellType.FRIENDLY_SHIP):
+            return True
+        else:
+            return False
 
     #---------------------------------------------------------------------------
     def _score(self):
@@ -140,7 +154,8 @@ class HeatCell(object):
 
         elif(ship != None and ship.player_id != me.id):
             self.type = CellType.ENEMY_SHIP
-            return SHIP_HEAT_GRADE# + ship.halite)/avg_halite
+            halite_add = ship.halite if SHIP_USE_CARGO is True else 0
+            return SHIP_HEAT_GRADE + halite_add
 
         else:
             self.type = CellType.HALITE
@@ -177,6 +192,10 @@ class HeatMap(object):
     #---------------------------------------------------------------------------
     def is_occupied(self, position):
         return self.cells[position].is_occupied()
+
+    #---------------------------------------------------------------------------
+    def is_mutex(self, position):
+        return self.cells[position].is_mutex()
 
     #---------------------------------------------------------------------------
     def create_opportunity_map(self, base_case, coeff_map):
@@ -456,25 +475,19 @@ def agent(obs,config):
 
 
     #--------------------------------------------------------------------------------
-    def get_enemies_in_region(region):
-        ''' Return a list of all enemies in a region
-        '''
+    def get_enemies_in_region(region, halite_thresh = 0):
+        """ Return a list of all enemies in a region """
         enemies = []
         for pos in region:
             cell = board.cells[pos]
-
-            #if(cell.ship is not None):
-            #    print("get_enemies_in_region: " + str(pos) + " has ship: " + str(cell.ship.id) + " owned by player: " + str(cell.ship.player_id))
-            #else:
-            #    print("get_enemies_in_region: " + str(pos) + " no ships.")
-
-            if (cell.ship is not None and cell.ship.player_id != me.id):
+            if (cell.ship is not None and cell.ship.player_id != me.id and cell.ship.halite <= halite_thresh):
                 enemies.append(cell.ship)
-
         return enemies
 
     #--------------------------------------------------------------------------------
     def flee_enemies(pos, enemies):
+        """ Looks to see if enemies close to ship, if so we move in opposite directions """
+
         print("flee_enemies: " + str(len(enemies)) + " from " + str(pos))
 
         total = 0
@@ -494,7 +507,6 @@ def agent(obs,config):
         print("flee_enemies: " + str(move_from_angle(opposite)))
         return move_from_angle(opposite)
 
-    
     #--------------------------------------------------------------------------------
     def move_from_angle(angle):
         if(angle < 45 and angle >= 315):
@@ -634,7 +646,7 @@ def agent(obs,config):
             return
 
         region = get_moves_region(meta.ship.position, SAFE_PROXIMITY)
-        enemies = get_enemies_in_region(region)
+        enemies = get_enemies_in_region(region, meta.ship.halite)
         if enemies:
             dir = flee_enemies(meta.ship.position, enemies)
             meta.ship.next_action = position_deconflict(meta.ship, dir)
@@ -675,6 +687,13 @@ def agent(obs,config):
 
     #--------------------------------------------------------------------------------
     def process_rank(rank_list, remove_point = None):
+        ''' Iterative function to process a rank list and assign tasks based on highest
+            ranking grade first (gets preference), working to lowest rank.
+
+            remove_point is used if we want to remove a point from each rank_list element's
+            heat map.  This will in effect make this point unchoosable by the rest of the list.
+        '''
+
         if not rank_list:
             return
 
@@ -698,7 +717,15 @@ def agent(obs,config):
 
         debug("Selected: " + max_meta.id + " to go to: +" + str(meta.destination))
         rank_list.remove(max_meta)
-        process_rank(rank_list, max_meta.destination)   
+
+        #TODO: Goal here is to make halite mutually exclusive but enemy ships not, could change the logic and add a mutually
+        #   exclusive flag, pushing the mutual exclusive decision into the class
+        if base_map.is_mutex(max_meta.destination):
+            process_rank(rank_list, max_meta.destination)   
+        else:
+            print("Processing without removing.")
+            process_rank(rank_list)   
+
               
     #endregion
 
